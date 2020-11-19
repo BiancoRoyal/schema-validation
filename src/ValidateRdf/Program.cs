@@ -8,7 +8,7 @@ using System.CommandLine;
 using VDS.RDF;
 using VDS.RDF.Parsing;
 
-namespace ValidateJson
+namespace ValidateRDF
 {
     class Program
     {

@@ -4,6 +4,8 @@ using Console = System.Console;
 using FileInfo = System.IO.FileInfo;
 using System.Collections.Generic;
 using Path = System.IO.Path;
+using DirectoryInfo = System.IO.DirectoryInfo;
+using Directory = System.IO.Directory;
 using System.Linq;
 
 // We can not cherry-pick imports from System.CommandLine since InvokeAsync is a necessary extension.
@@ -11,43 +13,20 @@ using System.CommandLine;
 using System.Xml;
 using System.Xml.Schema;
 
-namespace ValidateJson
+namespace ValidateXml
 {
     class Program
     {
-        private static int Handle(string[] inputs, FileInfo schema)
+        protected static XmlSchemaSet xmlSchemaSet = new XmlSchemaSet();
+        protected static List<string> xmlInputs = new List<string>();
+
+        private static bool ValidateInputs()
         {
-            // Load the schema
-
-            XmlSchemaSet xmlSchemaSet = new XmlSchemaSet();
-            xmlSchemaSet.XmlResolver = new XmlUrlResolver();
-
-            xmlSchemaSet.Add(null, schema.FullName);
-
-            var schemaMessages = new List<string>();
-            xmlSchemaSet.ValidationEventHandler += (object sender, ValidationEventArgs e) =>
-            {
-                schemaMessages.Add(e.Message);
-            };
-            xmlSchemaSet.Compile();
-
-            if (schemaMessages.Count > 0)
-            {
-                Console.Error.WriteLine($"Failed to compile the schema: {schema}");
-                foreach (string message in schemaMessages)
-                {
-                    Console.Error.WriteLine(message);
-                    return 1;
-                }
-            }
-
-            // Validate
-
+            // needs to get refactored with EnumerateFiles function and search pattern like *.xml - looks not right
             string cwd = System.IO.Directory.GetCurrentDirectory();
+            var valid = xmlInputs.Count() > 0;
 
-            bool failed = false;
-
-            foreach (string pattern in inputs)
+            foreach (string pattern in xmlInputs)
             {
                 IEnumerable<string> paths;
                 if (Path.IsPathRooted(pattern))
@@ -96,22 +75,77 @@ namespace ValidateJson
                             Console.Error.WriteLine(message);
                         }
 
-                        failed = true;
+                        valid = valid & false;
                     }
                     else
                     {
                         Console.WriteLine($"OK: {path}");
+                        valid = valid & true;
                     }
                 }
             }
 
-            return (failed) ? 1 : 0;
+            return valid;
+        }
+
+        private static bool LoadXMLSchemaFromFileInfo(FileInfo schemaFileInfo)
+        {
+            return LoadXMLSchemaFromFileFullname(schemaFileInfo.FullName);
+        }
+
+        private static bool LoadXMLSchemaFromFileFullname(string fileFullName)
+        {
+            xmlSchemaSet.Add(null, fileFullName);
+
+            var schemaMessages = new List<string>();
+            xmlSchemaSet.ValidationEventHandler += (object sender, ValidationEventArgs e) =>
+            {
+                schemaMessages.Add(e.Message);
+            };
+            xmlSchemaSet.Compile();
+
+            if (schemaMessages.Count > 0)
+            {
+                Console.Error.WriteLine($"Failed to compile the schema: {fileFullName}");
+                foreach (string message in schemaMessages)
+                {
+                    Console.Error.WriteLine(message);
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static int Handle(string[] inputs, FileInfo schema, DirectoryInfo schemes)
+        {
+            xmlInputs = inputs.ToList();
+            var valid = (schema != null) || (schemes != null);
+
+            if(schema != null)
+            {
+                valid = valid & LoadXMLSchemaFromFileInfo(schema);
+            }
+
+            if (schemes != null)
+            {
+                valid = schemes.EnumerateFiles("*.xsd").Count() > 0;
+                foreach (var xsdFile in schemes.EnumerateFiles("*.xsd"))
+                {
+                    valid = valid & LoadXMLSchemaFromFileFullname(xsdFile.FullName);
+                }
+            }
+
+            if(valid)
+            {
+                return (ValidateInputs()) ? 0 : 1;
+            }
+        
+            return 1;
         }
 
         private static int MainWithCode(string[] args)
         {
-            var rootCommand = new RootCommand(
-                "Validates the XML files given the XSD schema.")
+            var rootCommand = new RootCommand("Validates the XML files with the given XSD file or the given XSD files from a directory.")
             {
                 new Option<string[]>(
                         new[] {"--inputs", "-i"},
@@ -119,23 +153,31 @@ namespace ValidateJson
                     {Required = true},
 
                 new Option<FileInfo>(
-                    new[] {"--schema", "-s"},
-                    "Path to the XSD schema")
+                    new[] {"--schema", "-f"},
+                    "Path to the XSD schema file")
                 {
-                    Required = true,
+                    Required = false,
                     Argument = new Argument<FileInfo>().ExistingOnly()
+                },
+
+                new Option<DirectoryInfo>(
+                    new[] { "--schemes", "-d"},
+                    "Path to the XSD schema folder")
+                {
+                    Required = false,
+                    Argument = new Argument<DirectoryInfo>().ExistingOnly()
                 }
             };
 
             rootCommand.Handler = System.CommandLine.Invocation.CommandHandler.Create(
-                (string[] inputs, FileInfo schema) => Handle(inputs, schema));
+                (string[] inputs, FileInfo schema, DirectoryInfo schemes) => Handle(inputs, schema, schemes));
 
-            int exitCode = rootCommand.InvokeAsync(args).Result;
-            return exitCode;
+            return rootCommand.InvokeAsync(args).Result;
         }
 
         public static void Main(string[] args)
         {
+            xmlSchemaSet.XmlResolver = new XmlUrlResolver();
             int exitCode = MainWithCode(args);
             Environment.ExitCode = exitCode;
         }
